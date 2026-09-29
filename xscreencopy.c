@@ -31,6 +31,13 @@ typedef struct {
 } BMPInfoHeader;
 #pragma pack(pop)
 
+static void set_active_cursor(Display *dpy, Window win, Cursor cursor) {
+    XChangeActivePointerGrab(dpy, ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
+                             cursor, CurrentTime);
+    XDefineCursor(dpy, win, cursor);
+    XFlush(dpy);
+}
+
 int main(void) {
     Display *dpy = XOpenDisplay(NULL);
     if (!dpy) return 1;
@@ -61,10 +68,17 @@ int main(void) {
     XMapRaised(dpy, win);
     XSync(dpy, False);
 
-    Cursor cross = XCreateFontCursor(dpy, XC_crosshair);
+    Cursor cross_cursor = XCreateFontCursor(dpy, XC_crosshair);
+    Cursor pencil_cursor = XCreateFontCursor(dpy, XC_pencil);
+
     XGrabPointer(dpy, win, False, ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
-                 GrabModeAsync, GrabModeAsync, win, cross, CurrentTime);
-    XGrabKeyboard(dpy, win, False, GrabModeAsync, GrabModeAsync, CurrentTime);
+                 GrabModeAsync, GrabModeAsync, win, cross_cursor, CurrentTime);
+
+    for (int i = 0; i < 100; i++) {
+        if (XGrabKeyboard(dpy, win, False, GrabModeAsync, GrabModeAsync, CurrentTime) == GrabSuccess)
+            break;
+        usleep(1000);
+    }
 
     XGCValues xor_vals;
     xor_vals.function = GXxor;
@@ -97,20 +111,28 @@ int main(void) {
                 selecting = 0;
                 break;
             } else if (ks == XK_Alt_L || ks == XK_Alt_R || ks == XK_Meta_L || ks == XK_Meta_R) {
-                alt_pressed = 1;
+                if (!alt_pressed) {
+                    alt_pressed = 1;
+                    set_active_cursor(dpy, win, pencil_cursor);
+                }
             }
         } else if (ev.type == KeyRelease) {
             KeySym ks = XLookupKeysym(&ev.xkey, 0);
             if (ks == XK_Alt_L || ks == XK_Alt_R || ks == XK_Meta_L || ks == XK_Meta_R) {
-                alt_pressed = 0;
+                if (alt_pressed) {
+                    alt_pressed = 0;
+                    set_active_cursor(dpy, win, cross_cursor);
+                }
             }
         } else if (ev.type == ButtonPress && ev.xbutton.button == Button1) {
             start_x = cur_x = prev_x = ev.xbutton.x;
             start_y = cur_y = prev_y = ev.xbutton.y;
             if (alt_pressed || (ev.xbutton.state & Mod1Mask)) {
                 is_drawing_line = 1;
+                set_active_cursor(dpy, win, pencil_cursor);
             } else {
                 is_selecting_rect = 1;
+                set_active_cursor(dpy, win, cross_cursor);
             }
         } else if (ev.type == MotionNotify) {
             cur_x = ev.xmotion.x;
@@ -136,6 +158,7 @@ int main(void) {
         } else if (ev.type == ButtonRelease && ev.xbutton.button == Button1) {
             if (is_drawing_line) {
                 is_drawing_line = 0;
+                set_active_cursor(dpy, win, alt_pressed ? pencil_cursor : cross_cursor);
             } else if (is_selecting_rect) {
                 is_selecting_rect = 0;
                 selecting = 0;
@@ -177,8 +200,18 @@ int main(void) {
                 }
                 free(row);
                 fclose(f);
-                
-                system("xclip -selection clipboard -t image/bmp -i /tmp/xscreenshot.bmp");
+
+                system("convert /tmp/xscreenshot.bmp /tmp/xscreenshot.png 2>/dev/null || "
+                       "ffmpeg -y -i /tmp/xscreenshot.bmp /tmp/xscreenshot.png 2>/dev/null");
+
+                if (access("/tmp/xscreenshot.png", F_OK) == 0) {
+                    system("xclip -selection clipboard -t image/png -i /tmp/xscreenshot.png 2>/dev/null || "
+                           "wl-copy -t image/png < /tmp/xscreenshot.png 2>/dev/null");
+                } else {
+                    system("xclip -selection clipboard -t image/bmp -i /tmp/xscreenshot.bmp 2>/dev/null || "
+                           "xclip -selection clipboard -t image/x-bmp -i /tmp/xscreenshot.bmp 2>/dev/null || "
+                           "wl-copy < /tmp/xscreenshot.bmp 2>/dev/null");
+                }
             }
             XDestroyImage(cropped);
         }
@@ -191,7 +224,8 @@ int main(void) {
     XFreeGC(dpy, gc);
     XFreeGC(dpy, xor_gc);
     XFreeGC(dpy, draw_gc);
-    XFreeCursor(dpy, cross);
+    XFreeCursor(dpy, cross_cursor);
+    XFreeCursor(dpy, pencil_cursor);
     XDestroyImage(bg);
     XCloseDisplay(dpy);
     return 0;
